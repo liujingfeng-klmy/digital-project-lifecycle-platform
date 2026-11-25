@@ -1,0 +1,12 @@
+Django>=5.2,<5.3
+djangorestframework>=3.16,<3.17
+djangorestframework-simplejwt>=5.5,<6.0
+django-cors-headers>=4.7,<5.0
+pdfplumber>=0.11,<0.12
+python-docx>=1.1,<2.0
+openpyxl>=3.1,<4.0
+requests>=2.32,<3.0
+# PM_DB_ENGINE=django.db.backends.postgresql 切换 PostgreSQL 时所需驱动。
+# 默认 SQLite 用不到，但既然 settings.py 留了切换入口，依赖就必须跟上，
+# 否则按文档切换会直接 ModuleNotFoundError。
+psycopg[binary]>=3.2,<4.0

@@ -1,0 +1,1 @@
+import{I as n}from"./index-qvC0wjjl.js";import{p as t}from"./_plugin-vue_export-helper-BiwdEAt8.js";const s=n("ui",{state:()=>({pending:0,doing:0}),actions:{async refreshPending(){try{const{data:i}=await t.pending();this.pending=i.pending||0,this.doing=i.doing||0}catch{}}}});export{s as u};

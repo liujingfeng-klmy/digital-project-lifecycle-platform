@@ -1,0 +1,1 @@
+const e={draft:"draft",precheck:"run",supplement:"back",expert_review:"expert",review_supplement:"back",cost_review:"audit",cost_supplement:"back",fiscal_review:"audit",approval:"audit",tendering:"wait",building:"run",trial:"run",acceptance:"audit",accepted:"done",reserve:"stop",rejected:"stop"};export{e as S};

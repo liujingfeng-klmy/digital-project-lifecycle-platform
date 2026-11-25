@@ -1,0 +1,1354 @@
+  <div v-loading="loading">
+    <div v-if="loadError" class="load-error">
+      <el-empty :description="loadError" :image-size="72" />
+    </div>
+    <div v-else-if="p" class="wrap">
+      <!-- 项目信息带：政务蓝底，编号/阶段/名称/关键要素一屏说清 -->
+      <section class="hero">
+        <div class="hero-top">
+          <div class="hero-head">
+            <div class="hero-id">
+              <span class="hero-code mono">{{ p.code }}</span>
+              <span class="hero-stage">
+                <i class="hs-dot" :class="'d-' + p.stage" />{{ p.stage_label }}
+              </span>
+              <span v-if="p.round" class="hero-round">第 {{ p.round }} 轮</span>
+            </div>
+            <h1 class="hero-title">{{ p.name }}</h1>
+            <div class="hero-meta">
+              <span>{{ p.unit }}</span>
+              <i class="hm-sep" />
+              <span>{{ p.year || '—' }} 年度</span>
+              <i class="hm-sep" />
+              <span>{{ p.category || '未填领域' }}</span>
+              <i class="hm-sep" />
+              <span>申报人 {{ p.applicant_display }}</span>
+            </div>
+          </div>
+          <div class="hero-actions">
+            <span v-if="viewOnly" class="ro-badge">只读</span>
+            <el-button
+              v-if="viewOnly && userStore.isAdmin"
+              size="small" @click="adminUnlock = true; ptab = 'act'"
+            >以管理员身份办理</el-button>
+            <el-button v-if="canEdit" size="small" @click="openEdit">修改申报信息</el-button>
+            <el-button v-if="canExport" size="small" :loading="exporting" @click="exportArchive">
+              导出归档包
+            </el-button>
+            <el-button v-if="canDelete" size="small" class="hero-danger" @click="removeProject">删除</el-button>
+          </div>
+        </div>
+
+        <div class="hp">
+          <div class="hp-bar"><div class="hp-fill" :style="{ width: progressPct + '%' }" /></div>
+          <div class="hp-steps">
+            <span
+              v-for="(s, i) in ORDER"
+              :key="s.key"
+              class="hp-step"
+              :class="{
+                done: stepStates[i] === 'done',
+                now: stepStates[i] === 'now',
+                stop: stepStates[i] === 'stop',
+              }"
+            >{{ s.label }}</span>
+          </div>
+        </div>
+
+        <!-- 阶段说明只对「还要办」的环节有意义；结项、终止后阶段名已说明一切 -->
+        <div v-if="!terminal" class="hero-hint">
+          {{ STAGE_HINT[p.stage] || '' }}
+          <span v-if="p.stage !== 'accepted' && p.stage !== 'rejected'" class="hero-stay">
+            已在此阶段 {{ p.days_in_stage }} 天
+          </span>
+        </div>
+      </section>
+
+      <!-- 储备库不是终态：说明停在哪儿、怎么接着走，别让人以为项目被作废了 -->
+      <el-alert
+        v-if="p.stage === 'reserve'"
+        type="info"
+        :closable="false"
+        show-icon
+        class="miss-bar"
+        title="本项目暂无资金安排，已转入项目储备库"
+      >
+        <template #default>
+          待财政安排资金后，由审核岗在「本环节办理」点「重新纳入财政审核」，
+          从财政审核接着往下走；左侧「项目储备库」里随时能找到它。
+        </template>
+      </el-alert>
+
+      <el-alert
+        v-if="missingRequired.length"
+        type="warning"
+        :closable="false"
+        show-icon
+        class="miss-bar"
+        :title="`申报信息还缺：${missingRequired.join('、')}。补齐后才能提交预审。`"
+      >
+        <template #default>
+          <el-button link type="primary" size="small" @click="openEdit">去补填</el-button>
+        </template>
+      </el-alert>
+
+      <!-- 页签：一屏只放一类信息。一个项目有五类事（办理、概况、材料、结论、流转），
+           全铺在一页要拉两米长，收进页签后每屏只剩一件事 -->
+      <div class="card tabs-card">
+        <div class="tabs-bar">
+          <button
+            v-for="t in tabs"
+            :key="t.key"
+            class="tab-btn"
+            :class="{ on: ptab === t.key }"
+            @click="ptab = t.key"
+          >
+            {{ t.label }}<span v-if="t.count" class="tab-count">{{ t.count }}</span>
+          </button>
+          <!-- 详情页一环节一条，想看每一笔操作（含全部经办意见）才进这个页 -->
+          <span v-if="ptab === 'flow'" class="tabs-right">
+            <el-tooltip placement="top" popper-class="stat-tip"
+              content="进入完整流转页：每个动作、每条经办意见单独一条，可按阶段流转/经办意见筛选">
+              <el-button link type="primary" @click="goFlow">逐条流水</el-button>
+            </el-tooltip>
+          </span>
+        </div>
+
+        <!-- ① 本环节办理：办完再看别的 -->
+        <div v-show="ptab === 'act'" class="tab-cols">
+          <div class="col-main">
+          <!-- ① 本环节办理：先办事，再核对、再看项目。
+               原来办理表单在右栏、任务书生成在页面底部，办一件要来回拉两屏 -->
+          <el-card v-if="!viewOnly" shadow="never" class="card act-card">
+            <template #header>
+              <div class="act-head">
+                <span class="card-title">本环节办理</span>
+                <span class="ah-stage">{{ p.stage_label }}</span>
+                <!-- 有草稿就明说，别让人以为自己没存上、又重填一遍 -->
+                <el-tooltip v-if="myDraft" placement="top" popper-class="stat-tip"
+                  :content="`${myDraft.action_label}：${draftSavedAt} 存过一版，点这里接着填`">
+                  <span class="draft-flag" @click="resumeDraft">在办 · 已存草稿</span>
+                </el-tooltip>
+                <span v-if="sla.days" class="sla-chip" :class="'sl-' + slaTone">
+                  {{ slaShort }}
+                </span>
+              </div>
+            </template>
+
+            <!-- 承办与时限收成一条窄带：原来是「头卡片签 + 一行数字 + 一根空进度条」
+                 三处说同一件事，还各占一行 -->
+            <div class="act-meta">
+              <div class="am-cell">
+                <span class="am-k">承办</span>
+                <span class="am-v">{{ p.handler_label || '已结束' }}</span>
+                <el-button v-if="userStore.role === 'admin' && p.handler_role"
+                           link type="primary" size="small"
+                           style="margin-left:8px;padding:0"
+                           @click="openReassign">改派</el-button>
+              </div>
+              <template v-if="sla.days">
+                <div class="am-cell">
+                  <span class="am-k">时限</span>
+                  <span class="am-v">{{ sla.days }} 天</span>
+                </div>
+                <div class="am-cell">
+                  <span class="am-k">已用</span>
+                  <span class="am-v">{{ sla.used }} 天</span>
+                </div>
+                <div class="am-prog">
+                  <div class="sla-track">
+                    <div
+                      class="sla-fill"
+                      :class="'sl-' + slaTone"
+                      :style="{ width: Math.min(100, Math.round((sla.used / sla.days) * 100)) + '%' }"
+                    />
+                  </div>
+                  <span class="am-pct" :class="'sl-' + slaTone">
+                    {{ Math.min(100, Math.round((sla.used / sla.days) * 100)) }}%
+                  </span>
+                </div>
+              </template>
+            </div>
+
+            <div v-if="openNotice" class="notice-mini">
+              <div class="notice-mini-title">
+                有 {{ openNotice.items.length }} 项{{ openNotice.kind === 'audit'
+                  ? '待反馈' : openNotice.kind === 'review' ? '待修改' : '待补正' }}
+              </div>
+              <div class="notice-mini-sub">
+                第 {{ openNotice.round }} 轮 · {{ openNotice.kind_label }}
+                <template v-if="openNotice.deadline"> · 期限 {{ openNotice.deadline }}</template>
+              </div>
+            </div>
+
+            <div v-if="docStageVisible" class="doc-panel">
+              <div class="dp-head">
+                <span class="dp-title">
+                  {{ p.stage === 'precheck' ? '预审修正说明'
+                    : p.stage === 'cost_review' ? '费用评审任务书' : '立项批复' }}
+                </span>
+                <span class="dp-sub">
+                  {{ p.stage === 'cost_review'
+                    ? (costTasks.length
+                      ? '已生成，下载盖章后送达；收到评估意见回来登记结论'
+                      : '填财评机构并生成，下载盖章后送达；送达后回来登记评估意见')
+                    : `按模板生成给 ${p.unit} 的批复；出具后才能转待招标` }}
+                </span>
+                <!-- 立项只有这一个动作，按钮直接摆在这一行，不再多垫一段说明 -->
+                <el-button
+                  v-if="p.stage === 'approval'"
+                  class="dp-act"
+                  type="primary"
+                  :loading="docBusy"
+                  @click="genApproval"
+                >生成立项批复</el-button>
+              </div>
+
+              <!-- 预审：勾选要写进函件的问题 -->
+              <template v-if="p.stage === 'precheck'">
+                <div v-if="!candidates.length" class="muted doc-empty">
+                  还没有可写入的问题。请先执行「规则预审」与「AI 深度审查」，
+                  系统会把必须补正、需说明的问题列到这里。
+                </div>
+                <template v-else>
+                  <div class="pick-head">
+                    <el-checkbox
+                      :model-value="allChecked"
+                      :indeterminate="someChecked"
+                      @change="toggleAll"
+                    >全选</el-checkbox>
+                    <span class="muted">已选 {{ pickedCount }} / {{ candidates.length }} 条</span>
+                  </div>
+                  <div class="pick-list">
+                    <div v-for="c in candidates" :key="c.key" class="pick-row">
+                      <el-checkbox v-model="pickedMap[c.key]" />
+                      <span class="pick-badge" :class="c.level">
+                        {{ c.level === 'block' ? '必须补正' : '需说明' }}
+                      </span>
+                      <span class="pick-src">{{ c.source_label }}</span>
+                      <span class="pick-title">{{ c.title }}</span>
+                      <span v-if="c.advice" class="pick-advice">{{ c.advice }}</span>
+                    </div>
+                  </div>
+                  <div class="dp-foot">
+                    <span class="foot-label">回函期限</span>
+                    <el-date-picker
+                      v-model="noticeDeadline"
+                      type="date"
+                      value-format="YYYY-MM-DD"
+                      placeholder="可留空，事后手填"
+                      style="width: 170px"
+                    />
+                    <el-button type="primary" :loading="docBusy" @click="genPrecheckNotice">
+                      生成预审修正说明
+                    </el-button>
+                  </div>
+                </template>
+              </template>
+
+              <!-- 费用评审：委托财评机构，默认 7 个自然日 -->
+              <template v-else-if="p.stage === 'cost_review'">
+                <!-- 生成清单放表单上方：生成过就该一眼看到，不用翻到页面底部找 -->
+                <div v-if="costTasks.length" class="task-list">
+                  <div class="task-list-head">
+                    <span>已生成 {{ costTasks.length }} 份任务书</span>
+                    <span class="muted">下载盖章后送达财评机构</span>
+                  </div>
+                  <div v-for="(d, i) in costTasks" :key="d.id" class="task-row">
+                    <el-button link type="primary" class="doc-name" @click="downloadDoc(d)">
+                      {{ d.name }}
+                    </el-button>
+                    <span v-if="i === 0" class="task-badge">最新</span>
+                    <span class="muted">{{ d.created_by_name }} · {{ fmtTime(d.created) }}</span>
+                    <span v-if="d.meta?.days" class="task-meta">
+                      {{ d.meta.days }} 天 · 交付期限 {{ d.meta.deadline }}
+                    </span>
+                  </div>
+                </div>
+
+                <div v-if="costLocked" class="doc-lock-tip">
+                  任务书已生成，参数锁定。要改财评机构、联系人或评审期限，
+                  先点下方「修改」，改完再重新生成。
+                </div>
+
+                <el-form label-width="118px" label-position="left" class="doc-form"
+                  :disabled="costLocked">
+                  <el-form-item label="财评机构" required>
+                    <el-input v-model="costForm.entrust_unit"
+                      placeholder="受托评估的机构名称，如：市财政投资评审中心" />
+                  </el-form-item>
+                  <el-form-item label="委托单位联系人">
+                    <div class="two-col">
+                      <el-input v-model="costForm.entrust_contact" placeholder="我局经办人" />
+                      <div class="phone-cell">
+                        <el-input v-model="costForm.entrust_phone" maxlength="20"
+                          :class="{ 'is-bad': phoneErr.entrust }"
+                          placeholder="手机或固话，如 0990-6220000"
+                          @input="phoneErr.entrust = ''" />
+                        <div v-if="phoneErr.entrust" class="ferr">{{ phoneErr.entrust }}</div>
+                      </div>
+                    </div>
+                  </el-form-item>
+                  <el-form-item label="建设单位联系人">
+                    <div class="two-col">
+                      <el-input v-model="costForm.unit_contact" placeholder="申报单位经办人" />
+                      <div class="phone-cell">
+                        <el-input v-model="costForm.unit_phone" maxlength="20"
+                          :class="{ 'is-bad': phoneErr.unit }"
+                          placeholder="手机或固话，如 0990-6220000"
+                          @input="phoneErr.unit = ''" />
+                        <div v-if="phoneErr.unit" class="ferr">{{ phoneErr.unit }}</div>
+                      </div>
+                    </div>
+                  </el-form-item>
+                  <el-form-item label="评审期限">
+                    <el-input-number v-model="costForm.days" :min="1" :max="90" />
+                    <span class="unit">个自然日（默认 7）</span>
+                  </el-form-item>
+                </el-form>
+                <div class="dp-foot">
+                  <span class="muted">
+                    {{ costLocked ? '已生成，参数已锁定。'
+                      : '生成后自动下载，落款为出具单位与当日日期。' }}
+                  </span>
+                  <el-button v-if="costLocked" @click="costEditUnlocked = true">修改</el-button>
+                  <el-button v-else-if="costTaskDoc" @click="costEditUnlocked = false">
+                    取消修改
+                  </el-button>
+                  <el-button :type="costTaskDoc ? 'default' : 'primary'" :loading="docBusy"
+                    :disabled="costLocked" @click="genCostTask">
+                    {{ costTaskDoc ? '重新生成任务书' : '生成费用评审任务书' }}
+                  </el-button>
+                </div>
+
+                <!-- 第三方报告：费用评审的结论写在报告里，评审通过前必须有这份材料 -->
+                <div v-if="canUploadReport" class="report-box">
+                  <div class="report-head">
+                    <span class="report-title">第三方评估报告</span>
+                    <span class="report-sub">
+                      财评机构出具后上传，通过前必须有；扫描件也可以
+                    </span>
+                  </div>
+                  <div v-if="costReports.length" class="report-list">
+                    <div v-for="r in costReports" :key="r.id" class="report-row">
+                      <el-button link type="primary" class="doc-name" @click="openRaw(r)">
+                        {{ r.filename }}
+                      </el-button>
+                      <span class="report-meta">
+                        {{ r.uploaded_by_name || '' }} · {{ fmtTime(r.created) }}
+                      </span>
+                      <el-button link type="danger" class="report-del"
+                        @click="removeReport(r)">删除</el-button>
+                    </div>
+                  </div>
+                  <div v-else class="report-empty">
+                    还没有上传评估报告 —— 点「费用评审通过」会被拦下。
+                  </div>
+                  <div class="report-foot">
+                    <el-upload
+                      :auto-upload="false"
+                      :show-file-list="false"
+                      :on-change="uploadCostReport"
+                      accept=".pdf,.docx,.txt,.md,.xlsx,.xlsm"
+                    >
+                      <el-button size="small" :loading="reportBusy">上传评估报告</el-button>
+                    </el-upload>
+                    <span class="report-tip">PDF / DOCX，单份 200MB 内，可传多份</span>
+                  </div>
+                </div>
+
+                <!-- 保存：报告没回来，件本来就在我手上。点一下就存进在办箱，
+                     不必为「别挂着」提前转走 -->
+                <div v-if="canHoldCost" class="hold-bar" :class="{ on: holdDraft }">
+                  <div class="hold-main">
+                    <span class="hold-title">
+                      {{ holdDraft ? '已保存，件在在办箱' : '件在办（等评估报告）' }}
+                    </span>
+                    <span v-if="holdDraft" class="hold-tag">保存于 {{ draftSavedAt }}</span>
+                    <span v-if="costDeadline" class="hold-tag"
+                      :class="{ over: costDueText.startsWith('已超') }">
+                      交付期限 {{ costDeadline }}
+                      <template v-if="costDueText"> · {{ costDueText }}</template>
+                    </span>
+                    <span v-if="!costTaskDoc" class="hold-tag hold-warn">先生成任务书</span>
+                  </div>
+                  <div class="hold-act">
+                    <el-button size="small" type="primary" :disabled="!costTaskDoc"
+                      :loading="holding" @click="holdCost">保存</el-button>
+                  </div>
+                </div>
+              </template>
+
+            </div>
+
+
+            <!-- 验收材料：两个阶段各收各的 ——
+                 待验收出具《数据归集证明》（正文取自单位报的试运行与归集情况），
+                 结项（已验收）后才补传专家验收意见备案 -->
+            <div v-if="['acceptance', 'accepted'].includes(p.stage)" class="proof-box">
+              <div class="proof-head">
+                <span class="proof-title">{{ p.stage === 'acceptance' ? '验收材料' : '结项备案' }}</span>
+                <span class="proof-sub">
+                  {{ p.stage === 'acceptance'
+                    ? '按模板出具，盖章后送建设单位；没有这份证明不能验收'
+                    : '专家验收意见在结项后补传备案，不影响结项' }}
+                </span>
+              </div>
+
+              <!-- 待验收：证明是生成出来的，不是收上来的 -->
+              <template v-if="p.stage === 'acceptance'">
+                <div class="proof-row">
+                  <div class="proof-label">
+                    <span class="proof-name">数据归集证明</span>
+                    <span class="proof-tag" :class="collectDoc ? 'ok' : 'need'">
+                      {{ collectDoc ? '已出具' : '缺此不能验收' }}
+                    </span>
+                  </div>
+                  <div class="proof-files">
+                    <div v-if="collectDoc" class="proof-file">
+                      <el-button link type="primary" class="doc-name"
+                        @click="downloadDoc(collectDoc)">{{ collectDoc.name }}</el-button>
+                      <span class="report-meta">
+                        {{ collectDoc.created_by_name }} · {{ fmtTime(collectDoc.created) }}
+                      </span>
+                      <span v-if="collectDoc.meta?.doc_no" class="report-meta">
+                        编号 {{ collectDoc.meta.doc_no }}
+                      </span>
+                    </div>
+                    <template v-else>
+                      <div class="proof-src">
+                        <div class="proof-src-h">试运行情况（申报单位填报）</div>
+                        <div class="proof-src-b">{{ p.trial_summary || '未填报' }}</div>
+                      </div>
+                      <div class="proof-src">
+                        <div class="proof-src-h">数据归集情况（申报单位填报）</div>
+                        <div class="proof-src-b">{{ p.data_collect_scope || '未填报' }}</div>
+                      </div>
+                    </template>
+                  </div>
+                  <div v-if="canIssueProof" class="proof-act">
+                    <el-button size="small" type="primary" @click="openIssue">
+                      {{ collectDoc ? '重新出具' : '出具证明' }}
+                    </el-button>
+                  </div>
+                </div>
+                <div v-if="!canIssueProof" class="proof-empty proof-readonly">
+                  《数据归集证明》由我局（审核岗）按模板出具，建设单位只查看。
+                </div>
+              </template>
+
+              <!-- 已验收：只收专家验收意见 -->
+              <div v-else class="proof-row">
+                <div class="proof-label">
+                  <span class="proof-name">专家验收意见</span>
+                  <span class="proof-tag" :class="acceptOpinions.length ? 'ok' : 'need'">
+                    {{ acceptOpinions.length ? '已备案' : '待上传' }}
+                  </span>
+                </div>
+                <div class="proof-files">
+                  <div v-for="r in acceptOpinions" :key="r.id" class="proof-file">
+                    <el-button link type="primary" class="doc-name" @click="openRaw(r)">
+                      {{ r.filename }}
+                    </el-button>
+                    <span class="report-meta">{{ r.uploaded_by_name }} · {{ fmtTime(r.created) }}</span>
+                    <el-button v-if="canFileOpinion" link type="danger" size="small"
+                      @click="removeProof(r)">删除</el-button>
+                  </div>
+                  <span v-if="!acceptOpinions.length" class="proof-empty">
+                    验收会结束后把专家意见（签字页扫描件即可）传上来备案。
+                  </span>
+                </div>
+                <el-upload v-if="canFileOpinion" :auto-upload="false" :show-file-list="false"
+                  accept=".pdf,.docx,.jpg,.jpeg,.png" :on-change="(f) => uploadProof(f, 'accept_opinion')">
+                  <el-button size="small" :loading="proofBusy === 'accept_opinion'">上传</el-button>
+                </el-upload>
+              </div>
+            </div>
+
+            <!-- 本环节办理顺序提示 -->
+            <div v-if="p.stage === 'precheck'" class="act-tip">
+              顺序：规则预审（查形式）→ AI 深度审查（查内容，需先配模型）→ 有硬性缺项就「退回补正」，
+              没有就填初审意见「初审通过」。两者都只列问题，不下结论。
+            </div>
+            <div v-if="p.stage === 'cost_review'" class="act-tip">
+              ① 生成《费用评审任务书》，盖章送达财评机构；② 送达后点「保存」，
+              件留在在办箱等报告（默认 7 个自然日）；③ 报告回来后上传「第三方评估报告」；
+              ④ 再点「费用评审通过」—— 结论由报告承担。
+              「征求反馈」是把评估意见发单位确认，可多轮。
+            </div>
+            <div v-if="p.stage === 'cost_supplement'" class="act-tip">
+              按「本轮需处理」逐条核对，材料点「上传补正材料」补。
+              <b>无异议、也没有材料要补的，直接提交即可</b>，系统按「无异议」留痕。
+            </div>
+            <div v-if="p.stage === 'approval'" class="act-tip">
+              办理顺序：① 生成立项批复并送达申报单位；② 点「批复已出具，转待招标」。
+            </div>
+            <div v-if="p.stage === 'trial'" class="act-tip">
+              试运行由建设单位执行：填「试运行情况」与「数据归集情况」——
+              两栏都有模板语句，点「填入示例」照着改数字即可。提交后进入待验收，
+              我局据此出具《数据归集证明》；没有归集不能验收。
+            </div>
+            <div v-if="p.stage === 'acceptance'" class="act-tip">
+              办理顺序：① 核对申报单位填报的试运行与归集情况；② 按模板出具
+              《数据归集证明》并送建设单位；③ 确认验收、项目结项。
+              专家验收意见不必现在传 —— 结项后在「已验收」里补传备案。
+            </div>
+
+            <div v-if="actions.some((a) => a.key === 'cost_review_pass') && !costReports.length"
+              class="act-block-tip">
+              还没有评估报告，「费用评审通过」暂不可用 —— <b>先在本环节「第三方评估报告」里上传</b>。
+            </div>
+            <div v-if="actions.some((a) => a.key === 'accept') && !collectDoc"
+              class="act-block-tip">
+              还没有出具《数据归集证明》，<b>不能验收</b> —— 先在上方「数据归集证明」里
+              按模板出具并送建设单位；数据未归集的项目不能结项。
+            </div>
+
+            <div v-if="actions.length || canUpload" class="act-foot">
+              <span class="af-label">{{ actions.length ? '办理动作' : '材料准备' }}</span>
+              <div class="af-btns">
+                <!-- 补材料就是这一环的活，入口摆在动作按钮同一行，不再藏到页面右上角 -->
+                <el-button v-if="canUpload" class="act-btn" @click="uploadShow = true">
+                  {{ uploadLabel }}
+                </el-button>
+                <el-button
+                  v-for="a in actions"
+                  :key="a.key"
+                  :type="actionBlockReason(a) ? 'default'
+                    : (a.primary === false ? 'default' : 'primary')"
+                  class="act-btn"
+                  :disabled="!!actionBlockReason(a)"
+                  :title="actionBlockReason(a) || undefined"
+                  @click="openAction(a)"
+                >{{ a.label }}</el-button>
+                <span v-if="actions.some((a) => actionBlockReason(a))" class="act-block-tip">
+                  灰掉的按钮：{{ actions.filter((a) => actionBlockReason(a)).map((a) => `${a.label}（${actionBlockReason(a)}）`).join('；') }}
+                </span>
+              </div>
+            </div>
+            <div v-if="!actions.length && !canUpload" class="act-notice">
+              当前阶段没有你可执行的动作。{{ p.handler_label ? `等${p.handler_label}办理。` : '流程已结束。' }}
+            </div>          </el-card>
+
+          <!-- 立项只出批复：说明白为什么下面空了，免得以为资料丢了或页面坏了 -->
+          <div v-if="compactStage && !fullArchive" class="quiet-note">
+            立项环节只出批复；过程结论在「审核结论」页签。
+          </div>
+
+          <!-- 本轮要处理的事：办理时最需要看的东西，摆在按钮上面 -->
+          <el-card v-if="openNotices.length" shadow="never" class="card">
+            <template #header>
+              <div class="card-head">
+                <span class="card-title">本轮需处理</span>
+                <span class="card-sub">
+                  {{ openNotices.length }} 项未办结<template
+                    v-if="openNotices[0].deadline">，期限 {{ openNotices[0].deadline }}</template>
+                </span>
+              </div>
+            </template>
+            <div v-for="n in openNotices" :key="n.id" class="notice">
+              <div class="notice-head">
+                <span class="notice-round">第 {{ n.round }} 轮</span>
+                <span class="notice-kind" :class="n.kind">{{ n.kind_label }}</span>
+                <span class="muted">{{ n.issued_by_name }} · {{ fmtTime(n.issued_at) }}</span>
+              </div>
+              <ol class="notice-items">
+                <li v-for="(it, i) in n.items" :key="i">
+                  <b>{{ it.title }}</b>
+                  <span v-if="it.requirement">：{{ it.requirement }}</span>
+                </li>
+              </ol>
+              <div v-if="n.note" class="notice-note">说明：{{ n.note }}</div>
+            </div>
+          </el-card>
+
+          </div>
+
+        </div>
+
+        <!-- ② 项目概况 -->
+        <div v-show="ptab === 'info'" class="tab-pane pane-info">
+          <!-- ③ 项目情况：立项环节收起，切「完整档案」再看。
+               这里不再单独加「项目情况」分区标签 —— 下面第一张卡的标题就是
+               「项目概况」，两行字说的是同一件事，白占一行。 -->
+          <div class="zone info-zone">
+          <!-- 回看时「办理信息」卡在内侧的办理页签里，这里补一行合上；
+               结项后「当前办理：已结束」没有意义，不显示 -->
+          <div v-if="viewOnly && !terminal" class="ro-line">
+            <span>当前办理：<b>{{ p.handler_label || '—' }}</b></span>
+            <span v-if="eventsAsc.length" class="ro-last">
+              最近：{{ eventsAsc[eventsAsc.length - 1].action_label }}
+              <span class="ro-time">{{ fmtTime(eventsAsc[eventsAsc.length - 1].created) }}</span>
+            </span>
+          </div>
+          <!-- 概况：页签已经叫「项目概况」，卡头不再重复这四个字 -->
+          <el-card shadow="never" class="card">
+            <el-descriptions :column="descCols" size="small" class="info-desc">
+              <el-descriptions-item label="申报单位">{{ p.unit }}</el-descriptions-item>
+              <el-descriptions-item label="申报年度">{{ p.year || '—' }}</el-descriptions-item>
+              <el-descriptions-item label="联系人">{{ p.contact_name || '—' }}</el-descriptions-item>
+              <el-descriptions-item label="联系人手机号">{{ p.contact_phone || '—' }}</el-descriptions-item>
+              <el-descriptions-item label="业务领域">{{ p.category || '—' }}</el-descriptions-item>
+              <el-descriptions-item label="可研总投资">
+                {{ fmtMoney(p.investment) }} 万元
+              </el-descriptions-item>
+              <!-- 核定预算：费用评审按评估报告核定，财政审核可再调，批复就按这个数写。
+                   与可研申报数并排摆，差多少一眼看得出 -->
+              <el-descriptions-item label="核定预算">
+                <template v-if="p.budget_amount != null">
+                  <b class="budget-num">{{ fmtMoney(p.budget_amount) }}</b> 万元
+                  <span v-if="budgetDiff" class="budget-diff">{{ budgetDiff }}</span>
+                </template>
+                <span v-else class="muted">{{ budgetPendingText }}</span>
+              </el-descriptions-item>
+              <el-descriptions-item label="建设周期">{{ p.duration_months || '—' }} 个月</el-descriptions-item>
+              <el-descriptions-item label="提交时间">{{ fmtTime(p.submitted_at) }}</el-descriptions-item>
+            </el-descriptions>
+            <div class="block">
+              <div class="block-label">
+                <span>建设内容</span>
+                <span class="block-len">{{ (p.summary || '').length }} 字</span>
+              </div>
+              <div class="clamp-block">{{ blockText(p.summary, 'summary') || '（未填写）' }}</div>
+              <button v-if="isLongText(p.summary)" class="clamp-toggle" @click="toggleBlock('summary')">
+                {{ isBlockOpen('summary') ? '收起' : '展开全文' }}
+                <span>{{ isBlockOpen('summary') ? '▴' : '▾' }}</span>
+              </button>
+            </div>
+            <div class="block">
+              <div class="block-label">
+                <span>建设必要性</span>
+                <span class="block-len">{{ (p.necessity || '').length }} 字</span>
+              </div>
+              <div class="clamp-block">{{ blockText(p.necessity, 'necessity') || '（未填写）' }}</div>
+              <button v-if="isLongText(p.necessity)" class="clamp-toggle" @click="toggleBlock('necessity')">
+                {{ isBlockOpen('necessity') ? '收起' : '展开全文' }}
+                <span>{{ isBlockOpen('necessity') ? '▴' : '▾' }}</span>
+              </button>
+            </div>
+            <div class="block">
+              <div class="block-label">
+                <span>政策依据</span>
+                <span class="block-len">{{ (p.basis || '').length }} 字</span>
+              </div>
+              <div class="clamp-block">{{ blockText(p.basis, 'basis') || '（未填写）' }}</div>
+              <button v-if="isLongText(p.basis)" class="clamp-toggle" @click="toggleBlock('basis')">
+                {{ isBlockOpen('basis') ? '收起' : '展开全文' }}
+                <span>{{ isBlockOpen('basis') ? '▴' : '▾' }}</span>
+              </button>
+            </div>
+          </el-card>
+
+         </div>
+
+        </div>
+
+        <!-- ③ 申报材料 -->
+        <div v-show="ptab === 'files'" class="tab-pane">
+          <div v-if="!materialCount" class="pane-empty">还没有项目资料。</div>
+          <div v-else class="mat-list">
+            <div v-for="row in materialRows" :key="row.key" class="mat-row">
+              <span class="mat-kind" :class="{ doc: row.kind === 'doc' }">{{ row.kindLabel }}</span>
+              <div class="mat-main">
+                <!-- 单位申报/补正交的原件 -->
+                <template v-if="row.kind === 'file'">
+                  <button class="mat-name" @click="openRaw(row.data)">{{ row.data.filename }}</button>
+                  <div class="mat-sub">
+                    {{ row.data.size_mb }} MB
+                    <span v-if="row.data.stage_label" class="mat-stage">{{ row.data.stage_label }}</span>
+                    <span v-if="row.data.version > 1" class="mat-ver">第 {{ row.data.version }} 版</span>
+                  </div>
+                </template>
+                <!-- 系统按模板生成的文书 -->
+                <template v-else-if="row.kind === 'doc'">
+                  <button class="mat-name" @click="downloadDoc(row.data)">{{ row.data.name }}</button>
+                  <div class="mat-sub">
+                    系统文书
+                    <span v-if="row.data.stage_label" class="mat-stage">{{ row.data.stage_label }}</span>
+                  </div>
+                </template>
+                <!-- 评审会材料：一份就直说文件名，多份折成一条（五位专家不该占五行），
+                     点开才列出各份 —— 这一页要回答「有没有专家意见」，不是数表格 -->
+                <template v-else-if="row.kind === 'review'">
+                  <button v-if="row.group.files.length === 1" class="mat-name"
+                    @click="viewReviewFile(row.group.files[0])">
+                    {{ row.group.files[0].name }}
+                  </button>
+                  <button v-else class="mat-name" @click="toggleReviewGroup(row.group.kind)">
+                    {{ row.group.label }} · {{ row.group.files.length }} 份
+                    <span class="mat-caret">{{ openReviewGroup === row.group.kind ? '▴' : '▾' }}</span>
+                  </button>
+                  <div class="mat-sub">
+                    {{ row.group.files.length > 1 ? '共 ' + groupSize(row.group) + ' MB' : groupSize(row.group) + ' MB' }}
+                    <span class="mat-stage">评审会</span>
+                  </div>
+                  <div v-if="row.group.files.length > 1 && openReviewGroup === row.group.kind" class="mat-children">
+                    <div v-for="f in row.group.files" :key="f.id" class="mat-child">
+                      <button class="mat-child-name" @click="viewReviewFile(f)">{{ f.name }}</button>
+                      <span class="mat-child-size">{{ (Number(f.size || 0) / 1048576).toFixed(2) }} MB</span>
+                    </div>
+                  </div>
+                </template>
+                <!-- 老项目只有单份扫描件时的兼容行 -->
+                <template v-else>
+                  <button class="mat-name" @click="viewScan()">{{ p.review_scan.name }}</button>
+                  <div class="mat-sub">
+                    改造前上传的单份扫描件
+                    <span class="mat-stage">评审会</span>
+                  </div>
+                </template>
+              </div>
+            </div>
+          </div>
+          <div class="pane-foot">
+            <el-button v-if="canUpload" type="primary" @click="uploadShow = true">
+              {{ uploadLabel }}
+            </el-button>
+          </div>
+        </div>
+
+        <!-- ④ 审核结论 -->
+        <div v-show="ptab === 'concl'" class="tab-pane">
+          <!-- ② 前置审核意见：上游环节已经定下的事，本环节办理时核对。
+               征求反馈之后只留本轮反馈事项与下游要用的结论，审批过程收进完整档案。
+               已验收是归档态：过程结论不再摊开，要看走「流转记录」 -->
+          <div v-if="!archived && (conclusionRows.length
+            || conclNotices.length
+            || (showReviewMeeting && reviewStageSeen) || showCostRounds)" class="zone">
+            <!-- 费用评审轮次：只列征求反馈、单位反馈与结论，多轮也看得清 -->
+            <el-card v-if="showCostRounds" shadow="never" class="card">
+              <template #header>
+                <div class="card-head">
+                  <span class="card-title">费用评审轮次</span>
+                  <span class="card-sub">
+                    共 {{ costReturnCount }} 次征求反馈 · 当前第 {{ costReturnCount + 1 }} 轮
+                  </span>
+                </div>
+              </template>
+              <div class="cf-list">
+                <div v-for="r in costRounds" :key="r.id" class="cf-row">
+                  <div class="cf-round">第 {{ r.round }} 轮</div>
+                  <div class="cf-body">
+                    <div class="cf-head">
+                      <span class="cf-act" :class="'ca-' + r.action">{{ r.action_label }}</span>
+                      <span class="cf-actor">{{ r.actor_name || '系统' }}</span>
+                      <span class="cf-time">{{ fmtTime(r.created) }}</span>
+                    </div>
+                    <ol v-if="r.items.length" class="cf-items">
+                      <li v-for="(it, i) in r.items" :key="i">
+                        <b>{{ it.title }}</b><span v-if="it.requirement">：{{ it.requirement }}</span>
+                      </li>
+                    </ol>
+                    <div v-if="r.comment" class="cf-note">{{ r.comment }}</div>
+                  </div>
+                </div>
+              </div>
+            </el-card>
+
+            <!-- 补正 / 本轮反馈事项 -->
+            <el-card v-if="conclNotices.length" shadow="never" class="card">
+              <template #header>
+                <div class="card-head">
+                  <span class="card-title">补正与反馈记录</span>
+                  <span class="card-sub">{{ conclNotices.length }} 轮已办结</span>
+                </div>
+              </template>
+              <div v-for="n in conclNotices" :key="n.id" class="notice">
+                <div class="notice-head">
+                  <span class="notice-round">第 {{ n.round }} 轮</span>
+                  <span class="notice-kind" :class="n.kind">{{ n.kind_label }}</span>
+                  <span class="notice-status" :class="n.status">{{ n.status_label }}</span>
+                  <span class="muted">{{ n.issued_by_name }} · {{ fmtTime(n.issued_at) }}</span>
+                  <span v-if="n.deadline" class="muted">期限 {{ n.deadline }}</span>
+                </div>
+                <ol class="notice-items">
+                  <li v-for="(it, i) in n.items" :key="i">
+                    <b>{{ it.title }}</b>
+                    <span v-if="it.requirement">：{{ it.requirement }}</span>
+                  </li>
+                </ol>
+                <div v-if="n.note" class="notice-note">说明：{{ n.note }}</div>
+                <div v-if="n.reply" class="notice-reply">补正回复：{{ n.reply }}</div>
+              </div>
+            </el-card>
+
+            <!-- 评审会结论：只在评审期与评审后补正出现，费用评审起不再展示 -->
+            <el-card v-if="showReviewMeeting && reviewStageSeen" shadow="never" class="card">
+              <template #header>
+                <div class="card-head">
+                  <span class="card-title">评审会结论</span>
+                  <span class="card-sub">
+                    <template v-if="votes.recorded">{{ voteSummary }}</template>
+                    <template v-else>
+                      评审会结束后，由初审岗上传签字扫描件并录入票数
+                    </template>
+                  </span>
+                </div>
+              </template>
+              <div v-if="votes.recorded" class="vote-grid">
+                <div class="vote-box">
+                  <div class="vote-num">{{ votes.agree }}</div>
+                  <div class="vote-label">通过</div>
+                </div>
+                <div class="vote-box">
+                  <div class="vote-num">{{ votes.modified }}</div>
+                  <div class="vote-label">修改后通过</div>
+                </div>
+                <div class="vote-box">
+                  <div class="vote-num">{{ votes.reject }}</div>
+                  <div class="vote-label">不通过</div>
+                </div>
+                <div class="vote-box vote-sum">
+                  <div class="vote-num">{{ votes.yes }}/{{ votes.total }}</div>
+                  <div class="vote-label">通过票数（过半即通过）</div>
+                </div>
+              </div>
+              <div v-else class="muted" style="padding: 6px 0">
+                还没有录入评审会票数。
+              </div>
+
+              <div class="expert-line">
+                <div class="review-files-head">
+                  <span>评审会材料</span>
+                  <span class="muted">
+                    专家意见表 {{ reviewFileCounts.expert }} 份 ·
+                    汇总意见表 {{ reviewFileCounts.summary }} 份
+                  </span>
+                </div>
+                <div v-if="reviewFiles.length" class="review-files">
+                  <div v-for="f in reviewFiles" :key="f.id" class="review-file">
+                    <span class="rf-kind" :class="f.kind">{{ f.kind_label }}</span>
+                    <el-button link type="primary" size="small" class="rf-name"
+                      @click="viewReviewFile(f)">{{ f.name }}</el-button>
+                    <span class="muted">{{ f.uploaded_by_name }}</span>
+                  </div>
+                </div>
+                <template v-else-if="p.review_scan">
+                  <el-button link type="primary" size="small" @click="viewScan">
+                    {{ p.review_scan.name }}
+                  </el-button>
+                  <span class="muted">（改造前上传的单份扫描件）</span>
+                </template>
+                <span v-else class="muted">还没有上传评审会材料。</span>
+              </div>
+
+              <el-alert
+                v-if="p.stage === 'review_supplement'"
+                type="info" :closable="false" show-icon class="act-alert"
+                title="评审会结论为「修改后通过」：等申报单位按意见修改材料，改完交费用评审"
+              />
+            </el-card>
+
+            <!-- 环节结论：只列本环节需要核对的上游结论，一行一条 -->
+            <el-card v-if="conclusionRows.length" shadow="never" class="card">
+              <template #header>
+                <div class="card-head">
+                  <span class="card-title">{{ conclusionTitle }}</span>
+                </div>
+              </template>
+              <div class="concl-list">
+                <div v-for="r in conclusionRows" :key="r.key" class="concl-row">
+                  <div class="concl-label">{{ r.label }}</div>
+                  <div class="concl-main">
+                    <div class="concl-line">
+                      <span class="concl-val" :class="{ mono: r.mono }">{{ r.val }}</span>
+                      <span class="concl-at">{{ fmtTime(r.at) }}</span>
+                    </div>
+                    <div v-if="r.nt" class="concl-note">{{ r.nt }}</div>
+                  </div>
+                </div>
+              </div>
+            </el-card>
+          </div>
+
+          <!-- 预审结果：只在预审与评审期出现 -->
+          <el-card v-if="showPrecheckCards" shadow="never" class="card">
+            <template #header>
+              <div class="card-head">
+                <span class="card-title">预审结果</span>
+                <span class="card-sub">规则查形式，AI 查内容，都不下结论</span>
+              </div>
+            </template>
+            <el-tabs v-model="tab">
+              <el-tab-pane label="一级 · 规则预审" name="rule">
+                <template v-if="ruleReport">
+                  <div class="report-head">
+                    <span class="verdict" :class="'vd-' + ruleReport.verdict">{{ ruleReport.verdict_label }}</span>
+                    <span class="muted">
+                      第 {{ ruleReport.round + 1 }} 轮审查 · {{ ruleReport.created_by_name }} · {{ fmtTime(ruleReport.created) }}
+                    </span>
+                    <span class="counts">
+                      <b class="c-block">{{ ruleReport.counts.block }}</b> 必须补正
+                      <b class="c-warn">{{ ruleReport.counts.warn }}</b> 需说明
+                      <b class="c-pass">{{ ruleReport.counts.pass }}</b> 通过
+                    </span>
+                  </div>
+                  <div v-for="g in ruleGroups" :key="g.name" class="rgroup">
+                    <div class="rgroup-name">{{ g.name }}</div>
+                    <div v-for="it in g.items" :key="it.code + it.title" class="ritem">
+                      <span class="sev" :class="sevClass(it.severity)">{{ sevLabel(it.severity) }}</span>
+                      <div class="rbody">
+                        <div class="rtitle">{{ it.title }}</div>
+                        <div class="rdetail">{{ it.detail }}</div>
+                        <div v-if="it.advice" class="radvice">处理建议：{{ it.advice }}</div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="report-note">{{ ruleReport.note }}</div>
+                </template>
+                <el-empty v-else description="还没做过规则预审" :image-size="64">
+                  <div class="empty-tip">初审岗点右侧「执行规则预审」，几秒出结果。</div>
+                </el-empty>
+              </el-tab-pane>
+
+              <el-tab-pane label="二级 · AI 深度审查" name="ai">
+                <template v-if="aiReport">
+                  <div class="report-head">
+                    <span class="verdict" :class="'vd-' + aiReport.verdict">{{ aiReport.verdict_label }}</span>
+                    <span class="muted">
+                      第 {{ aiReport.round + 1 }} 轮审查 · {{ aiReport.llm_info?.model || '模型未记录' }} · {{ fmtTime(aiReport.created) }}
+                    </span>
+                    <span class="counts">
+                      <b class="c-block">{{ aiReport.counts.block || 0 }}</b> 必须补正
+                      <b class="c-warn">{{ aiReport.counts.warn || 0 }}</b> 需说明
+                      <b class="c-info">{{ aiReport.counts.info || 0 }}</b> 仅供参考
+                      <span class="c-total">共 {{ aiReport.counts.total }} 条</span>
+                    </span>
+                  </div>
+                  <div v-if="aiReport.counts.unread" class="unread-alert">
+                    有 {{ aiReport.counts.unread }} 段材料模型没审成（输出被截断或格式异常），
+                    这部分内容不能当作「没问题」，需人工补看。详见下方说明。
+                  </div>
+                  <div v-for="(f, i) in aiReport.findings" :key="i" class="finding">
+                    <div class="fhead">
+                      <span class="sev" :class="sevClass(f.level)">{{ sevLabel(f.level) }}</span>
+                      <span class="ftitle">{{ f.title }}</span>
+                      <span class="fsection">{{ f.section }}</span>
+                    </div>
+                    <div v-if="f.quote" class="fquote">「{{ f.quote }}」</div>
+                    <div class="fissue">{{ f.issue }}</div>
+                    <div v-if="f.advice" class="fadvice">建议：{{ f.advice }}</div>
+                  </div>
+                  <div class="report-note">{{ aiReport.note }}</div>
+                </template>
+                <el-empty v-else description="还没做过 AI 审查" :image-size="64">
+                  <div class="empty-tip">
+                    需先在「系统设置」里配置模型并启用。AI 审查按章节逐段过，几十秒出结果。
+                  </div>
+                </el-empty>
+              </el-tab-pane>
+            </el-tabs>
+          </el-card>
+
+          <!-- 查重：只在预审与评审期出现 -->
+          <el-card v-if="showDupCards" shadow="never" class="card">
+            <template #header>
+              <div class="card-head">
+                <span class="card-title">重复建设筛查</span>
+                <span class="card-sub">只列疑点，是否重复由专家核定</span>
+              </div>
+            </template>
+            <template v-if="p.dup_check && p.dup_check.level">
+              <div class="dup-head">
+                <span class="duplevel" :class="levelClass(p.dup_check.level)">
+                  {{ p.dup_check.level_label }}
+                </span>
+                <span class="dup-summary">{{ p.dup_check.summary }}</span>
+                <span class="muted dup-time">
+                  已比 {{ p.dup_check.compared || 0 }} 个项目 · {{ p.dup_check.checked_at || '' }}
+                </span>
+                <el-button
+                  v-if="canRefreshDup"
+                  size="small"
+                  :loading="dupRefreshing"
+                  @click="refreshDup"
+                >
+                  重新比对
+                </el-button>
+              </div>
+
+              <el-alert
+                v-if="p.dup_check.ranking?.length && !dupHasDetail"
+                type="warning"
+                :closable="false"
+                show-icon
+                class="dup-alert"
+                title="这次结果只存了疑点摘要，没有逐项对照（旧版本生成）。点「重新比对」生成对照表。"
+              />
+
+              <div v-if="(p.dup_check.ranking || []).length" class="dup-list">
+                <div v-for="(r, i) in p.dup_check.ranking" :key="i" class="dup-row">
+                  <div class="dup-row-head" @click="toggleDup(i)">
+                    <span class="dup-idx">{{ i + 1 }}</span>
+                    <div class="dup-namebox">
+                      <div class="dup-name">{{ r.project_name }}</div>
+                      <div class="dup-sub">
+                        {{ r.unit || '单位未填' }} · {{ r.year || '年度未填' }} ·
+                        {{ r.investment ? r.investment + ' 万元' : '投资未填' }}
+                        <template v-if="r.doc_type"> · {{ r.doc_type }}</template>
+                      </div>
+                    </div>
+                    <div class="dup-metrics">
+                      <span>功能重合 <b>{{ pct(r.function_overlap) }}%</b></span>
+                      <span class="sep">·</span>
+                      <span>疑点 <b>{{ (r.findings || []).length }}</b></span>
+                    </div>
+                    <span class="duplevel" :class="levelClass(r.level)">{{ r.level_label }}</span>
+                    <el-button
+                      v-if="hasDetail(r)"
+                      link
+                      type="primary"
+                      size="small"
+                      @click.stop="openDupDrawer(r)"
+                    >
+                      放大
+                    </el-button>
+                    <span class="dup-caret">{{ dupOpen[i] ? '▴' : '▾' }}</span>
+                  </div>
+
+                  <div v-show="dupOpen[i]" class="dup-body">
+                    <DupCompare
+                      v-if="hasDetail(r)"
+                      :item="r"
+                      :cur-name="p.name"
+                      :prev-name="r.project_name"
+                      :scope="p.dup_check.scope || {}"
+                    />
+                    <div v-else class="dup-legacy">
+                      <div v-for="(f, j) in r.findings" :key="j" class="dup-finding">
+                        <span class="dup-ftitle">{{ f.title }}</span>
+                        <span class="dup-fdetail">{{ f.detail }}</span>
+                        <div v-if="f.ask" class="dup-fask">需核实：{{ f.ask }}</div>
+                      </div>
+                      <div v-if="canRefreshDup" class="dup-legacy-foot">
+                        没有逐项对照，无法指认哪几条功能、哪几段原文重复。
+                        <el-button link type="primary" size="small" @click="refreshDup">
+                          重新比对生成
+                        </el-button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div v-else-if="p.dup_check.hidden_note" class="muted">
+                {{ p.dup_check.hidden_note }}
+              </div>
+              <div v-else class="muted">没有可比对的历史项目。</div>
+              <div class="report-note">{{ p.dup_check.note }}</div>
+            </template>
+            <div v-else class="empty-tip">提交申报时自动筛查；也可以执行规则预审刷新。</div>
+          </el-card>
+
+        </div>
+
+        <!-- ⑤ 流转记录：一个环节一条，退回补正单列 -->
+        <div v-show="ptab === 'flow'" class="tab-pane">
+          <div class="tl">
+            <div v-for="g in flowGroups" :key="g.key" class="tl-row" :class="{ 'is-ret': g.ret }">
+              <span class="tl-dot" />
+              <div class="tl-body">
+                <div class="tl-line">
+                  <span class="tl-stage">{{ g.stageLabel }}</span>
+                  <span v-if="g.retTag" class="tl-ret-tag">退回补充材料</span>
+                  <span class="tl-act">{{ g.title }}</span>
+                  <span class="tl-actor">{{ g.actors || '系统' }}</span>
+                </div>
+                <div v-if="g.note" class="tl-note">{{ g.note }}</div>
+                <div v-if="g.n > 1" class="tl-sub">本环节 {{ g.n }} 次操作：{{ g.acts.join(' · ') }}</div>
+              </div>
+              <!-- 时间独立成列、贴卡片右端：原来跟在标题群里 flex-wrap，
+                   文字一长就换行，时间和标题挤在同一行，读起来像两段字叠在一起 -->
+              <span class="tl-time">{{ fmtTime(g.at) }}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+          <!-- 重复点对照：整屏阅读 -->
+          <el-drawer
+            v-model="dupDrawer"
+            :title="dupPick ? `重复点对照 · ${dupPick.project_name}` : '重复点对照'"
+            size="82%"
+          >
+            <template v-if="dupPick">
+              <div class="drawer-cur">
+                本次申报：<b>{{ p.name }}</b>
+                <span class="muted">（{{ p.unit }} · {{ p.year }} 年度）</span>
+              </div>
+              <DupCompare :item="dupPick" :cur-name="p.name" :prev-name="dupPick.project_name"
+                :scope="p.dup_check.scope || {}" />
+            </template>
+          </el-drawer>
+    </div>
+
+    <!-- 修改申报信息 -->
+    <el-dialog v-model="editShow" title="修改申报信息" width="720px" top="6vh" :close-on-click-modal="false">
+      <ProjectFields
+        v-model:form="editForm"
+        :groups="orgGroups"
+        :categories="CATEGORIES"
+      />
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        title="申报单位必须从市本级单位名录中选择；已提交预审的项目不能改，请走补正流程。"
+      />
+      <template #footer>
+        <el-button @click="editShow = false">取消</el-button>
+        <el-button type="primary" :loading="saving" @click="doSaveEdit">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 原件预览 -->
+    <RawPreview v-model="rawVisible" :url="rawUrl" :filename="rawName" />
+
+    <!-- 动作表单 -->
+    <el-dialog
+      v-model="actShow"
+      :title="act?.label"
+      width="600px"
+      :close-on-click-modal="false"
+    >
+      <el-form label-position="top">
+        <el-alert
+          v-if="draftLoaded"
+          type="success"
+          :closable="false"
+          show-icon
+          class="act-alert"
+          :title="`已带入 ${draftSavedAt} 保存的草稿，改完点「确认」提交，或再存一次`"
+        />
+        <el-alert
+          v-if="act?.confirm"
+          type="info"
+          :closable="false"
+          show-icon
+          class="act-alert confirm-alert"
+          :title="act.confirm"
+        />
+        <el-form-item v-if="assignEntry && !assignEntry.fixed && !showAssign" label="承办人">
+          <el-alert
+            type="warning" :closable="false" show-icon
+            :title="`${assignEntry.scope_label}还没有可用账号，转出后只能进岗位待办`"
+          >
+            <template #default>
+              这一件转出后没有任何人会收到待办。请先到「账号管理」按
+              {{ assignEntry.scope_label }}建号，再回来转出。
+            </template>
+          </el-alert>
+        </el-form-item>
+        <el-form-item v-if="showAssign" label="转交给谁承办">
+          <el-select v-model="assignPick" filterable style="width: 100%"
+            placeholder="不选则由该岗位任何人接办">
+            <el-option
+              v-for="c in assignEntry.candidates"
+              :key="c.id"
+              :label="`${c.display}（${c.role_label}）`"
+              :value="c.id"
+            >
+              <span>{{ c.display }}</span>
+              <span class="opt-role">
+                {{ c.role_label }}<template v-if="c.unit"> · {{ c.unit }}</template>
+              </span>
+            </el-option>
+          </el-select>
+          <div class="field-tip">
+            转出后这一件只进所选人的待办；名单里没有合适的人，说明该岗位还没建账号，
+            先到「账号管理」按角色建号再转。
+          </div>
+        </el-form-item>
+        <el-form-item v-if="act?.key === 'conclude'" label="评审会材料（必传，可多份）">
+          <div class="scan-box scan-box-col">
+            <div v-if="reviewFiles.length" class="review-files">
+              <div v-for="f in reviewFiles" :key="f.id" class="review-file">
+                <span class="rf-kind" :class="f.kind">{{ f.kind_label }}</span>
+                <el-button link type="primary" size="small" class="rf-name"
+                  @click="viewReviewFile(f)">{{ f.name }}</el-button>
+                <el-button link type="danger" size="small"
+                  @click="removeReviewFile(f)">删</el-button>
+              </div>
+            </div>
+            <div class="upload-row">
+              <el-upload
+                :auto-upload="false" :show-file-list="false" multiple
+                accept=".pdf,.jpg,.jpeg,.png,.webp,.tif,.tiff"
+                :on-change="(f) => uploadReviewFiles(f, 'expert')"
+              >
+                <el-button size="small" :loading="reviewUploading">
+                  + 上传专家意见表
+                </el-button>
+              </el-upload>
+              <el-upload
+                :auto-upload="false" :show-file-list="false" multiple
+                accept=".pdf,.jpg,.jpeg,.png,.webp,.tif,.tiff"
+                :on-change="(f) => uploadReviewFiles(f, 'summary')"
+              >
+                <el-button size="small" :loading="reviewUploading">
+                  + 上传汇总意见表
+                </el-button>
+              </el-upload>
+            </div>
+            <span class="scan-tip">
+              每位专家一张表就传一张，汇总表另传，可一次选多份。支持 PDF 或图片，单份 30MB 内。
+              一张都没传不能出结论 —— 签字件是原始凭证。
+            </span>
+          </div>
+        </el-form-item>
+        <el-alert
+          v-if="act?.key === 'precheck_pass' && aiBlock"
+          type="warning"
+          :closable="false"
+          show-icon
+          class="act-alert"
+          :title="`AI 深度审查提出 ${aiBlock} 项「必须补正」意见`"
+        >
+          <template #default>
+            系统不阻断通过（模型可能误判），但意见会随件流转并记入留痕，
+            请专家在评审时逐项核定。
+          </template>
+        </el-alert>
+        <template v-for="f in act?.form || []" :key="f.key">
+          <el-form-item v-if="f.type === 'votes'" :label="f.label">
+            <div class="vote-form">
+              <div class="vote-input">
+                <span class="vote-input-label">通过</span>
+                <el-input-number v-model="actForm.votes.agree" :min="0" :max="99"
+                  controls-position="right" style="width: 96px" />
+              </div>
+              <div class="vote-input">
+                <span class="vote-input-label">修改后通过</span>
+                <el-input-number v-model="actForm.votes.modified" :min="0" :max="99"
+                  controls-position="right" style="width: 96px" />
+              </div>
+              <div class="vote-input">
+                <span class="vote-input-label">不通过</span>
+                <el-input-number v-model="actForm.votes.reject" :min="0" :max="99"
+                  controls-position="right" style="width: 96px" />
+              </div>
+            </div>
+            <div class="field-tip" :class="{ 'tip-bad': voteTip.level === 'bad',
+              'tip-ok': voteTip.level === 'ok' }">{{ voteTip.text }}</div>
+          </el-form-item>
+
+          <el-form-item v-else-if="f.type === 'items'" v-show="showReviewItems" :label="f.label">
+            <div class="items">
+              <div v-for="(it, i) in actForm.items" :key="i" class="item-row">
+                <div class="item-no">{{ i + 1 }}</div>
+                <div class="item-fields">
+                  <el-input v-model="it.title" placeholder="要改什么，例如：补充投资概算分项明细" />
+                  <el-input v-model="it.requirement" placeholder="具体要求（可选）" size="small" />
+                </div>
+                <el-button link type="danger" @click="rmItem(i)">删</el-button>
+              </div>
+              <el-button size="small" plain @click="addItem">+ 添加一条</el-button>
+            </div>
+            <div class="field-tip">每条至少 4 个字，申报单位照着这张单子改。</div>
+          </el-form-item>
+
+          <el-form-item v-else-if="f.type === 'date'" v-show="showReviewItems" :label="f.label">
+            <el-date-picker v-model="actForm.deadline" type="date" value-format="YYYY-MM-DD"
+              placeholder="选择日期" style="width: 100%" />
+          </el-form-item>
+
+          <el-form-item v-else-if="f.type === 'number'" :label="f.label" :required="f.required">
+            <div class="num-field">
+              <el-input-number v-model="actForm[f.key]" :min="0" :max="999999"
+                :precision="2" :controls="false" style="width: 180px" />
+              <span class="num-unit">万元</span>
+            </div>
+            <div v-if="f.tip" class="field-tip">{{ f.tip }}</div>
+          </el-form-item>
+
+          <el-form-item v-else-if="f.type === 'text'" :label="f.label" :required="f.required">
+            <el-input v-model="actForm[f.key]" />
+          </el-form-item>
+
+          <el-form-item v-else :label="f.label" :required="f.required">
+            <el-input
+              v-model="actForm[f.key]"
+              type="textarea"
+              :rows="f.sample ? 5 : (f.key === 'note' ? 4 : 2)"
+              :placeholder="f.placeholder || (f.min ? `至少 ${f.min} 个字` : '')"
+            />
+            <!-- 第一次报的项目单位不知道该写什么：给一段能照着改的模板语句 -->
+            <div v-if="f.sample" class="sample-line">
+              <el-button link type="primary" size="small" @click="fillSample(f)">
+                填入示例
+              </el-button>
+              <span class="sample-tip">填入模板语句，改日期与数字即可</span>
+            </div>
+            <div v-if="f.tip" class="field-tip">{{ f.tip }}</div>
+          </el-form-item>
+        </template>
+      </el-form>
+      <el-alert
+        v-if="act?.key === 'precheck_pass'"
+        type="info"
+        :closable="false"
+        show-icon
+        title="初审意见会写入流转记录，评审与费用评审环节都能看到。有硬性缺项时系统会拦住，只能退回补正。"
+      />
+      <!-- 保存放在最左、和确认同一条底栏：弹窗再长也不用来回滚动找按钮 -->
+      <template #footer>
+        <div class="act-footbar">
+          <el-button v-if="draftForAct" link type="danger" @click="discardDraft">丢弃草稿</el-button>
+          <el-button class="af-save" :loading="savingDraft" @click="saveDraft">
+            保存，稍后继续
+          </el-button>
+          <span class="af-grow" />
+          <el-button @click="actShow = false">取消</el-button>
+          <el-button type="primary" :loading="submitting" @click="submitAction">确认</el-button>
+        </div>
+      </template>
+    </el-dialog>
+
+    <!-- 出具《数据归集证明》：两段正文摊开可改，改过的回写项目 -->
+    <el-dialog v-model="issueDlg" title="出具《数据归集证明》" width="720px" top="8vh">
+      <el-alert type="info" :closable="false" show-icon class="confirm-alert"
+        title="两段正文会原样进证明。表述不清的先「退回补充试运行与归集说明」，别在这里替单位写。" />
+      <el-form label-position="top">
+        <el-form-item label="证明编号">
+          <el-input v-model="issueForm.doc_no" style="max-width: 280px"
+            :placeholder="`留空按 SJH-${p?.code || ''} 生成`" />
+        </el-form-item>
+        <el-form-item label="试运行情况">
+          <el-input v-model="issueForm.trial_summary" type="textarea" :rows="4"
+            placeholder="试运行起止时间、运行是否稳定、遗留问题" />
+        </el-form-item>
+        <el-form-item label="数据归集情况">
+          <el-input v-model="issueForm.data_collect_scope" type="textarea" :rows="4"
+            placeholder="归集了哪些数据：系统、库表、数据量、归集方式" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="issueDlg = false">取消</el-button>
+        <el-button type="primary" :loading="docBusy" @click="genDataCollect">
+          生成并下载
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 管理员改派承办人：承办人是真正办理权后的收回/接手入口 -->
+    <el-dialog v-model="reassignShow" title="改派承办人" width="480px" :close-on-click-modal="false">
+      <p class="ra-hint">当前环节：{{ p?.handler_role }}。改派只换办理人，不改变阶段与 SLA 停留天数。</p>
+      <el-select v-model="reassignPick" placeholder="选择新承办人（可清空后收回岗位池）"
+                 clearable filterable style="width:100%" :loading="reassignLoading">
+        <el-option v-for="u in reassignUsers" :key="u.id" :label="`${u.display}（${u.role_label}）`"
+                   :value="u.id" />
+      </el-select>
+      <p class="ra-hint">选择「清空」表示收回岗位池，该岗位任何人可领取办理。</p>
+      <template #footer>
+        <el-button @click="reassignShow = false">取消</el-button>
+        <el-button type="primary" @click="doReassign">确认改派</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 上传材料：就地弹框，不跳页面。项目资料只在本页这一处看和传 -->
+    <MaterialUploadDialog
+      v-model="uploadShow"
+      :project-id="p?.id"
+      :fill-hints="['draft', 'supplement'].includes(p?.stage || '')"
+      @uploaded="onMaterialUploaded"
+    />
+  </div>

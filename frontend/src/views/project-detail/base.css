@@ -1,0 +1,269 @@
+/* 详情页各构件共用的小件：卡片、标题、空态、提醒条。
+ * 每个构件各自 @import 一次 —— 样式跟着组件走，改一处不用满页找。
+ */
+
+.confirm-alert {
+  margin-bottom: 14px;
+}
+
+
+/* 材料表：表头浅底、行高统一，操作列不再挤成一团；
+   单元格左右留白压到 10px，窄屏（1280）才装得下五列 */
+.card :deep(.el-table th.el-table__cell) {
+  background: var(--panel-2);
+}
+
+.card :deep(.el-table td.el-table__cell) {
+  padding: 11px 0;
+}
+
+.card :deep(.el-table .cell) {
+  padding: 0 10px;
+}
+
+.foot-label {
+  font-size: 12.5px;
+  color: var(--ink-2);
+}
+
+.doc-name {
+  font-size: 12.5px;
+  padding: 0;
+}
+
+.mono {
+  font-family: "JetBrains Mono", monospace;
+  font-variant-ligatures: none;
+}
+
+
+/* 本环节办理改单栏：右栏「办理信息」与卡内承办、时限、流转页签三处重复，已删 */
+@media (max-width: 1220px) {
+  .card :deep(.el-table .cell) {
+    padding: 0 6px;
+  }
+}
+
+.card-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+  letter-spacing: -0.1px;
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.card-sub {
+  font-size: 11.5px;
+  color: var(--ink-3);
+}
+
+.card {
+  border-radius: var(--radius-lg);
+}
+
+.card-foot {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ferr {
+  font-size: 12px;
+  color: var(--danger);
+  margin-top: 2px;
+  line-height: 1.6;
+}
+
+.muted {
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+
+.report-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.report-note {
+  font-size: 12px;
+  color: var(--ink-4);
+  line-height: 1.7;
+  margin-top: 10px;
+}
+
+.empty-tip {
+  font-size: 11.5px;
+  color: var(--ink-4);
+}
+
+
+.notice {
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+
+.notice:last-child {
+  margin-bottom: 0;
+}
+
+.notice-head {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.notice-round {
+  font-size: 12px;
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.notice-status {
+  font-size: 12px;
+  padding: 1px 8px;
+  border-radius: 8px;
+}
+
+.notice-status.open {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.notice-status.resolved {
+  background: var(--ok-bg);
+  color: var(--ok);
+}
+
+.notice-items {
+  margin: 8px 0 0;
+  padding-left: 20px;
+  font-size: 12px;
+  color: var(--ink-2);
+  line-height: 1.85;
+}
+
+.notice-note {
+  font-size: 11.5px;
+  color: var(--ink-3);
+  margin-top: 6px;
+}
+
+.notice-reply {
+  font-size: 11.5px;
+  color: var(--ok);
+  margin-top: 6px;
+  line-height: 1.7;
+}
+
+.review-files {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+}
+
+.review-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 2px 0;
+}
+
+.rf-kind {
+  flex: 0 0 auto;
+  font-size: 12px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--ink-3);
+  border: 1px solid var(--line-soft);
+}
+
+.rf-kind.summary {
+  color: var(--brand, var(--ink));
+  border-color: var(--line);
+}
+
+.rf-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.notice-kind {
+  font-size: 12px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--line-soft);
+  color: var(--ink-3);
+}
+
+.notice-kind.review {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+.dp-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+  padding-top: 16px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+  border-top: 1px dashed var(--line);
+}
+
+/* 说明文字占满左侧，按钮永远贴右边，不再随文字长短左右乱跳 */
+.dp-foot .muted {
+  flex: 1;
+  min-width: 180px;
+  font-size: 11.5px;
+  line-height: 1.7;
+}
+
+.report-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.report-meta {
+  font-size: 11.5px;
+  color: var(--ink-4);
+}
+
+
+/* 一区多卡只靠卡间距分块，不加分区小标题 —— 小标题与卡内标题不在同一条左边线，
+   视觉上永远差一截，看着像没对齐 */
+.zone {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.act-alert {
+  margin-bottom: 14px;
+}
+
+.act-alert :deep(.el-alert__description) {
+  font-size: 12px;
+  line-height: 1.7;
+}

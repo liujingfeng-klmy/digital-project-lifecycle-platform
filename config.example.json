@@ -1,0 +1,23 @@
+{
+  "llm": {
+    "provider": "deepseek",
+    "base_url": "https://api.deepseek.com/v1",
+    "model": "deepseek-flash",
+    "api_key": "",
+    "temperature": 0.1,
+    "max_tokens": 8000,
+    "timeout": 120,
+    "chunk_chars": 6000,
+    "enabled": false,
+    "_说明": "api_key 留空，改用环境变量 PM_LLM_API_KEY 注入；enabled 默认 false，确认允许联网后再开。此文件可随交付包分发。"
+  },
+  "sensitive": {
+    "skip_ai": true
+  },
+  "org": {
+    "prefixes": ["示例市"],
+    "site": "示例市",
+    "issuer": "示例市数据管理局",
+    "_说明": "本地化配置。prefixes 是单位名归一前要剥离的行政区前缀（填本市全称）；site 是立项批复的建设地点；issuer 是数据归集证明的出具单位。未配置时按通用值运行，不影响功能。"
+  }
+}
